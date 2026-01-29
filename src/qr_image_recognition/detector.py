@@ -28,55 +28,22 @@ def _polygon_to_box(polygon: List[List[float]]) -> List[float]:
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
-def _decode_multi(detector: cv2.QRCodeDetector, img: np.ndarray) -> List[QRCodeResult]:
-    ok, decoded_info, points, _ = detector.detectAndDecodeMulti(img)
-    results: List[QRCodeResult] = []
-    if not ok or points is None or decoded_info is None:
-        return results
-    for text, polygon in zip(decoded_info, points):
-        if not text:
-            continue
-        polygon_list = [[float(x), float(y)] for x, y in polygon]
-        results.append(QRCodeResult(text=text, polygon=polygon_list, box=_polygon_to_box(polygon_list)))
-    return results
-
-
-def _decode_single(detector: cv2.QRCodeDetector, img: np.ndarray) -> List[QRCodeResult]:
-    text, points, _ = detector.detectAndDecode(img)
-    if not text or points is None:
-        return []
-    pts = np.array(points).reshape(-1, 2)
-    polygon_list = [[float(x), float(y)] for x, y in pts]
-    return [QRCodeResult(text=text, polygon=polygon_list, box=_polygon_to_box(polygon_list))]
-
-
-def _preprocess_variants(img: np.ndarray) -> Iterable[Tuple[np.ndarray, float]]:
-    yield img, 1.0
+def _preprocess_variants(img: np.ndarray) -> Iterable[Tuple[str, np.ndarray, float]]:
+    yield "original", img, 1.0
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    yield gray, 1.0
+    yield "gray", gray, 1.0
 
     denoised = cv2.GaussianBlur(gray, (3, 3), 0)
-    yield denoised, 1.0
+    yield "denoised", denoised, 1.0
 
     _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    yield thresh, 1.0
+    yield "thresh", thresh, 1.0
 
     h, w = gray.shape[:2]
     if max(h, w) < 1200:
         scaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-        yield scaled, 2.0
-
-
-def _detect_with_variants(detector: cv2.QRCodeDetector, variants: Iterable[np.ndarray]) -> List[QRCodeResult]:
-    for variant in variants:
-        results = _decode_multi(detector, variant)
-        if results:
-            return results
-        results = _decode_single(detector, variant)
-        if results:
-            return results
-    return []
+        yield "scaled", scaled, 2.0
 
 
 def _detect_polygons(detector: cv2.QRCodeDetector, img: np.ndarray) -> List[List[List[float]]]:
@@ -99,9 +66,9 @@ def _detect_polygons(detector: cv2.QRCodeDetector, img: np.ndarray) -> List[List
 
 
 def _detect_polygons_with_variants(
-    detector: cv2.QRCodeDetector, variants: Iterable[Tuple[np.ndarray, float]]
+    detector: cv2.QRCodeDetector, variants: Iterable[Tuple[str, np.ndarray, float]]
 ) -> List[List[List[float]]]:
-    for variant, scale in variants:
+    for _, variant, scale in variants:
         polygons = _detect_polygons(detector, variant)
         if polygons:
             if scale != 1.0:
@@ -136,15 +103,23 @@ def _decode_from_polygons(detector: cv2.QRCodeDetector, img: np.ndarray, polygon
         return results
 
     try:
-        ok, decoded_info, points, _ = detector.decodeMulti(img, np.array(polygons, dtype=np.float32))
-        if ok and decoded_info is not None and points is not None:
-            for text, polygon in zip(decoded_info, points):
+        decoded = detector.decodeMulti(img, np.array(polygons, dtype=np.float32))
+        if len(decoded) == 4:
+            ok, decoded_info, points, _ = decoded
+        else:
+            ok, decoded_info, points = decoded[0], decoded[1], decoded[2]
+
+        if ok and decoded_info is not None:
+            if points is not None and isinstance(points, np.ndarray) and points.ndim == 3:
+                source_polygons = points
+            else:
+                source_polygons = np.array(polygons, dtype=np.float32)
+
+            for text, polygon in zip(decoded_info, source_polygons):
                 if not text:
                     continue
                 polygon_list = [[float(x), float(y)] for x, y in polygon]
-                results.append(
-                    QRCodeResult(text=text, polygon=polygon_list, box=_polygon_to_box(polygon_list))
-                )
+                results.append(QRCodeResult(text=text, polygon=polygon_list, box=_polygon_to_box(polygon_list)))
             if results:
                 return results
     except Exception:
@@ -159,34 +134,15 @@ def _decode_from_polygons(detector: cv2.QRCodeDetector, img: np.ndarray, polygon
     return results
 
 
-def detect_qr_in_image(
-    image_path: str,
-    preprocess: bool = False,
-    detect_only: bool = False,
-    manual_detect: bool = False,
-) -> ImageResult:
+def detect_qr_in_image(image_path: str, preprocess: bool = True) -> ImageResult:
     detector = cv2.QRCodeDetector()
     img = cv2.imread(image_path)
     if img is None:
         return ImageResult(image_path=image_path, found=False, qrcodes=[], error="failed to read image")
 
-    if manual_detect:
-        variants = _preprocess_variants(img) if preprocess else [(img, 1.0)]
-        polygons = _detect_polygons_with_variants(detector, variants)
-        if detect_only:
-            results = [
-                QRCodeResult(text="", polygon=polygon, box=_polygon_to_box(polygon))
-                for polygon in polygons
-            ]
-        else:
-            results = _decode_from_polygons(detector, img, polygons)
-    else:
-        if preprocess:
-            results = _detect_with_variants(detector, (v for v, _ in _preprocess_variants(img)))
-        else:
-            results = _decode_multi(detector, img)
-            if not results:
-                results = _decode_single(detector, img)
+    variants = _preprocess_variants(img) if preprocess else [("original", img, 1.0)]
+    polygons = _detect_polygons_with_variants(detector, variants)
+    results = _decode_from_polygons(detector, img, polygons)
 
     return ImageResult(
         image_path=image_path,
@@ -196,15 +152,8 @@ def detect_qr_in_image(
     )
 
 
-def detect_qr_in_image_data(
-    image_path: str,
-    preprocess: bool = False,
-    detect_only: bool = False,
-    manual_detect: bool = False,
-) -> Dict[str, Any]:
-    result = detect_qr_in_image(
-        image_path, preprocess=preprocess, detect_only=detect_only, manual_detect=manual_detect
-    )
+def detect_qr_in_image_data(image_path: str, preprocess: bool = True) -> Dict[str, Any]:
+    result = detect_qr_in_image(image_path, preprocess=preprocess)
     return {
         "image_path": result.image_path,
         "found": result.found,
@@ -214,3 +163,13 @@ def detect_qr_in_image_data(
         ],
         "error": result.error,
     }
+
+
+def preprocess_outputs(image_path: str) -> List[Tuple[str, np.ndarray]]:
+    img = cv2.imread(image_path)
+    if img is None:
+        return []
+    outputs: List[Tuple[str, np.ndarray]] = []
+    for name, variant, _ in _preprocess_variants(img):
+        outputs.append((name, variant))
+    return outputs

@@ -19,4 +19,9 @@ setup(
         "pillow",
     ],
     python_requires=">=3.10",
+    entry_points={
+        "console_scripts": [
+            "qr-id=qr_image_recognition.qr_id:main",
+        ]
+    },
 )
