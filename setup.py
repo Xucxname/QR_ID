@@ -17,6 +17,8 @@ setup(
         "opencv-python",
         "numpy",
         "pillow",
+        "qrcode",
+        "cryptography",
     ],
     python_requires=">=3.10",
     entry_points={

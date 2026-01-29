@@ -47,6 +47,37 @@ pip install -r requirements.txt
 python scripts/QR_ID.py --name your_image.png
 ```
 
+### 生成二维码（保存到 images/）
+
+```bash
+python scripts/QR_ID.py --name new_qr.png --gen-text "hello world"
+```
+
+### 加密说明
+
+- 支持多种加密方式：`none`、`fernet`、`xor`
+- 通过 `--crypto` 选择方式，通过 `--key` 提供密钥
+- 未提供 `--key` 时默认明码（不加密/不解密）
+
+示例：
+
+```bash
+python scripts/QR_ID.py --name secret.png --gen-text "机密内容" --crypto fernet --key config/qr.key
+python scripts/QR_ID.py --name secret.png --crypto fernet --key config/qr.key
+```
+
+默认行为：
+- 若 `config/qr.key` 存在，会自动读取并用于加/解密
+- `--key` 现在用于指定“密钥文件路径”
+
+### 生成密钥文件
+
+```bash
+python scripts/gen_key.py --name my.key
+```
+
+生成后的路径为 `config/my.key`。
+
 ## 命令行输出示例
 
 ```
