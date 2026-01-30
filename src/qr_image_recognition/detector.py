@@ -27,6 +27,34 @@ def _detect_base_polygons(detector: cv2.QRCodeDetector, img: np.ndarray) -> List
     return _detect_polygons_with_variants(detector, _preprocess_variants(img))
 
 
+def _box_iou(box_a: List[float], box_b: List[float]) -> float:
+    x0 = max(box_a[0], box_b[0])
+    y0 = max(box_a[1], box_b[1])
+    x1 = min(box_a[2], box_b[2])
+    y1 = min(box_a[3], box_b[3])
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    inter = (x1 - x0) * (y1 - y0)
+    area_a = max(box_a[2] - box_a[0], 0.0) * max(box_a[3] - box_a[1], 0.0)
+    area_b = max(box_b[2] - box_b[0], 0.0) * max(box_b[3] - box_b[1], 0.0)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _merge_polygons(
+    primary: List[List[List[float]]], secondary: List[List[List[float]]]
+) -> List[List[List[float]]]:
+    if not primary:
+        return secondary
+    merged = list(primary)
+    for polygon in secondary:
+        box = _polygon_to_box(polygon)
+        if any(_box_iou(box, _polygon_to_box(existing)) > 0.3 for existing in merged):
+            continue
+        merged.append(polygon)
+    return merged
+
+
 def _crop_with_polygons(
     img: np.ndarray, polygons: List[List[List[float]]]
 ) -> tuple[np.ndarray, tuple[int, int], bool, List[List[List[float]]]]:
@@ -60,6 +88,19 @@ def _apply_offset(results: List[QRCodeResult], offset_x: int, offset_y: int) -> 
         qr.box = _polygon_to_box(qr.polygon)
 
 
+def _merge_results(
+    primary: List[QRCodeResult], secondary: List[QRCodeResult]
+) -> List[QRCodeResult]:
+    if not primary:
+        return secondary
+    merged = list(primary)
+    for qr in secondary:
+        if any(_box_iou(qr.box, existing.box) > 0.3 for existing in merged):
+            continue
+        merged.append(qr)
+    return merged
+
+
 def _collect_outputs(
     cropped: bool, crop_img: np.ndarray, variants: List[Tuple[str, np.ndarray, float]]
 ) -> List[Tuple[str, np.ndarray]]:
@@ -83,7 +124,7 @@ def _collect_warps(
         return []
     adapt_enabled = any(name == "adapt" for name, _, _ in variants)
     warps: List[Tuple[str, np.ndarray]] = []
-    # Save inverse perspective views for inspection.
+    # 保存透视矫正结果便于检查。
     for idx, polygon in enumerate(polygons, start=1):
         warped = _warp_from_polygon(crop_img, polygon)
         if adapt_enabled:
@@ -108,6 +149,10 @@ def detect_qr_with_steps(
         )
 
     base_polygons = _detect_base_polygons(detector, img)
+    if preprocess:
+        alt_polygons = _detect_polygons_with_variants(detector, _prepare_variants(img, True))
+        base_polygons = _merge_polygons(base_polygons, alt_polygons)
+    full_results = _decode_from_polygons(detector, img, base_polygons) if base_polygons else []
     crop_img, (offset_x, offset_y), cropped, crop_base_polygons = _crop_with_polygons(
         img, base_polygons
     )
@@ -116,8 +161,11 @@ def detect_qr_with_steps(
     polygons = _detect_polygons_with_variants(detector, variants)
     # Decode on the cropped region using detected polygons.
     results = _decode_from_polygons(detector, crop_img, polygons)
-    warp_polygons = [qr.polygon for qr in results] if results else (polygons or crop_base_polygons)
+    warp_polygons = _merge_polygons(polygons, crop_base_polygons)
+    if results:
+        warp_polygons = _merge_polygons(warp_polygons, [qr.polygon for qr in results])
     _apply_offset(results, offset_x, offset_y)
+    results = _merge_results(results, full_results)
 
     outputs = _collect_outputs(cropped, crop_img, variants)
     warps = _collect_warps(crop_img, warp_polygons, variants)
