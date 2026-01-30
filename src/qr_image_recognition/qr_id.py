@@ -7,7 +7,7 @@ from typing import Tuple
 import cv2
 
 from qr_image_recognition.crypto_utils import DEFAULT_KEY_PATH, load_key_from_path, try_decrypt_text
-from qr_image_recognition.detector import ImageResult, detect_qr_in_image, preprocess_outputs
+from qr_image_recognition.detector import ImageResult, detect_qr_with_steps
 from qr_image_recognition.qr_gen import generate_qr
 from qr_image_recognition.visualize import save_visualization
 
@@ -61,21 +61,22 @@ def main() -> None:
         print(f"[GEN] {output_path}")
         return
 
-    result = detect_qr_in_image(
-        str(image_path),
-        preprocess=True,
-    )
+    result, outputs, warps = detect_qr_with_steps(str(image_path), preprocess=True)
     _print_result(result, method, key)
 
     output_dir = Path("output") / image_path.stem
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for name, variant in preprocess_outputs(str(image_path)):
+    for name, variant in outputs:
         output_path = output_dir / f"{name}.png"
         if len(variant.shape) == 2:
             cv2.imwrite(str(output_path), variant)
         else:
             cv2.imwrite(str(output_path), variant)
+
+    for name, warped in warps:
+        output_path = output_dir / f"{name}.png"
+        cv2.imwrite(str(output_path), warped)
 
     vis_path = output_dir / "visualization.png"
     save_visualization(image_path, vis_path, result)
